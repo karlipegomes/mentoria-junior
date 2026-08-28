@@ -1,0 +1,230 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gha-pipeline-lab
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: gha-pipeline
+    title: "GitHub Actions 2/3: Pipeline de CI de Verdade"
+    description: "Construa um pipeline que compila uma imagem Docker multi-stage, roda testes em matriz, transporta artefatos entre jobs e usa secrets corretamente. Aqui você recebe o requisito, não o YAML pronto."
+    duration: 55m
+    image: "linuxtips/girus-devops:0.1"
+    privileged: true
+    tasks:
+      - name: "Primeiro faça na mão, depois automatize"
+        description: "Ninguém automatiza o que não sabe fazer manualmente. Antes do YAML, construa a imagem no braço e veja o que o pipeline vai ter que reproduzir."
+        steps:
+          - "**A regra de ouro da automação**"
+          - "Pipeline é a transcrição de um processo que você já domina. Quem escreve YAML antes de entender o processo acaba com um pipeline que ninguém sabe consertar."
+          - "Vamos criar uma aplicação pequena e empacotá-la à mão primeiro."
+          - "`mkdir -p ~/app-ci && cd ~/app-ci && git init -q`"
+          - "`git config user.email \"junior@lab.local\" && git config user.name \"Junior\"`"
+          - "Crie a aplicação — um servidor HTTP simples em Go:"
+          - |
+            cat > main.go << 'EOF'
+            package main
+
+            import (
+                "fmt"
+                "net/http"
+                "os"
+            )
+
+            func handler(w http.ResponseWriter, r *http.Request) {
+                fmt.Fprintf(w, "versao=%s\n", os.Getenv("APP_VERSION"))
+            }
+
+            func main() {
+                http.HandleFunc("/", handler)
+                http.ListenAndServe(":8080", nil)
+            }
+            EOF
+          - |
+            cat > go.mod << 'EOF'
+            module app-ci
+
+            go 1.21
+            EOF
+          - "**O Dockerfile multi-stage**"
+          - "Você viu multi-stage na fase de Docker. A ideia: um estágio para **compilar** (pesado, com o compilador) e outro para **executar** (mínimo, só o binário)."
+          - |
+            cat > Dockerfile << 'EOF'
+            FROM golang:1.21-alpine AS builder
+            WORKDIR /src
+            COPY go.mod ./
+            COPY main.go ./
+            RUN go build -o /out/app main.go
+
+            FROM alpine:3.19
+            COPY --from=builder /out/app /usr/local/bin/app
+            EXPOSE 8080
+            ENTRYPOINT ["/usr/local/bin/app"]
+            EOF
+          - "Construa e meça:"
+          - "`docker build -t app-ci:manual .`"
+          - "`docker images app-ci:manual --format '{{.Size}}'`"
+          - "Compare com o tamanho que teria sem multi-stage — a imagem `golang:1.21-alpine` sozinha passa de 200MB."
+          - "Guarde este comando de build. **Ele é o coração do seu pipeline.** Tudo que o workflow faz é rodar isso numa máquina que não é a sua."
+        tips:
+          - type: "info"
+            title: "Por que Go neste lab"
+            content: "Go compila para um binário estático único, então o estágio final não precisa de runtime nenhum. É o caso mais didático de multi-stage. Com Node ou Python o segundo estágio ainda precisa do interpretador, mas o princípio é idêntico."
+          - type: "tip"
+            title: "O pipeline não inventa nada"
+            content: "Se o build não funciona na sua máquina, ele não vai funcionar no runner — vai só falhar mais devagar e com log pior. Sempre valide local antes de empurrar para o CI."
+        validation:
+          - command: "test -f ~/app-ci/Dockerfile && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O Dockerfile não foi criado em ~/app-ci."
+          - command: "cd ~/app-ci && grep -qi 'AS builder' Dockerfile && grep -q 'COPY --from=builder' Dockerfile && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O Dockerfile não é multi-stage. Precisa de um estágio nomeado 'builder' e um COPY --from=builder."
+          - command: "docker image inspect app-ci:manual >/dev/null 2>&1 && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "A imagem app-ci:manual não existe. Rode o docker build."
+
+      - name: "Do comando manual para o workflow"
+        description: "Transcrever o build para um job — e descobrir na prática por que dois jobs não compartilham nada."
+        steps:
+          - "**Sua vez de escrever**"
+          - "Crie `.github/workflows/build.yml`. Requisitos:"
+          - "1. Dispara em `push` na branch `main` e em qualquer `pull_request`."
+          - "2. Um job chamado `build`, em `ubuntu-latest`."
+          - "3. O job baixa o código do repositório."
+          - "4. Depois roda o mesmo `docker build` que você executou à mão, com a tag `app-ci:ci`."
+          - "Você já sabe todas as chaves necessárias — são as mesmas do lab anterior."
+          - "Valide com `actionlint` antes de continuar."
+          - "**Agora o problema interessante**"
+          - "Adicione um **segundo** job chamado `scan`, que deve rodar **depois** do `build` e inspecionar a imagem."
+          - "A chave que cria dependência entre jobs é `needs:`. Ela recebe o nome de outro job."
+          - "Escreva o job `scan` com `needs: build` e, dentro dele, um step que rode `docker image inspect app-ci:ci`."
+          - "**Pare e pense antes de ler o próximo parágrafo:** esse step vai funcionar?"
+          - "Não. E o motivo é o ponto 3 e o ponto 5 do modelo de execução: **cada job ganha uma máquina nova e vazia**. A imagem que o job `build` construiu morreu junto com o runner dele. O job `scan` sobe numa máquina que nunca viu aquela imagem."
+          - "**Como se transporta coisa entre jobs**"
+          - "Existem três caminhos, e escolher errado é um erro comum:"
+          - "- **Artifacts** (`actions/upload-artifact` e `actions/download-artifact`) — para arquivos que outro job precisa. Relatórios, binários, pacotes."
+          - "- **Cache** (`actions/cache`) — para acelerar, nunca para transportar. Cache pode estar vazio e o pipeline tem que funcionar mesmo assim."
+          - "- **Registry** — para imagens de container. É o jeito certo: o job `build` publica, o job `scan` baixa."
+          - "Corrija seu workflow: no job `build`, depois do build, salve a imagem em arquivo com `docker save` e publique como artifact usando `actions/upload-artifact@v4`. No job `scan`, use `actions/download-artifact@v4` e carregue com `docker load`."
+          - "Valide com `actionlint`."
+        tips:
+          - type: "warning"
+            title: "Cache não é transporte"
+            content: "A diferença que separa júnior de pleno: cache é otimização, artifact é transporte. Um pipeline que QUEBRA quando o cache está frio está errado por definição — cache pode ser descartado pelo GitHub a qualquer momento."
+          - type: "info"
+            title: "needs também serializa"
+            content: "Por padrão todos os jobs rodam em paralelo. Cada needs que você adiciona transforma paralelo em fila e aumenta o tempo total. Só crie dependência quando existir de verdade."
+        validation:
+          - command: "test -f ~/app-ci/.github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O arquivo .github/workflows/build.yml não foi criado."
+          - command: "cd ~/app-ci && grep -q 'docker build' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O workflow não executa docker build."
+          - command: "cd ~/app-ci && grep -qE '^\\s*needs:\\s*build\\s*$' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O job scan não declara needs: build."
+          - command: "cd ~/app-ci && grep -q 'upload-artifact' .github/workflows/build.yml && grep -q 'download-artifact' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Faltou transportar a imagem entre os jobs com upload-artifact e download-artifact."
+          - command: "cd ~/app-ci && git add -A 2>/dev/null; ~/.local/bin/actionlint 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint apontou erros no build.yml."
+
+      - name: "Matriz: o mesmo job, várias combinações"
+        description: "Rodar o mesmo teste em múltiplas versões sem duplicar YAML."
+        steps:
+          - "**O problema**"
+          - "Sua aplicação precisa funcionar em Go 1.21, 1.22 e 1.23. Copiar e colar o job três vezes funciona — e vira um pesadelo na primeira mudança."
+          - "A `strategy.matrix` resolve isso: você declara os valores e o GitHub cria **um job para cada combinação**, em paralelo."
+          - "**Sua vez.** Adicione ao `build.yml` um job chamado `teste` que:"
+          - "1. Rode em `ubuntu-latest`."
+          - "2. Use uma matriz sobre a variável `go` com os valores `1.21`, `1.22` e `1.23`."
+          - "3. Baixe o código."
+          - "4. Tenha um step que imprima a versão que está sendo testada, lendo o valor da matriz."
+          - "**As duas peças novas:**"
+          - "- A matriz se declara dentro de `strategy:`, na chave `matrix:`. Cada variável recebe uma **lista** de valores."
+          - "- Para ler o valor no step, use a expressão de contexto entre chaves duplas, referenciando `matrix.` seguido do nome da variável."
+          - "**Um detalhe que derruba muita gente:** `1.21` sem aspas em YAML é o **número** 1.21. Mas `1.20` sem aspas vira `1.2`, porque o zero à direita some. Versões sempre entre aspas."
+          - "**Controlando a falha em matriz**"
+          - "Por padrão, se uma combinação falha, o GitHub **cancela as outras** (`fail-fast`). Isso economiza tempo, mas esconde informação: você conserta a versão 1.21 e descobre que a 1.23 também estava quebrada."
+          - "Para ver todas as falhas de uma vez, desligue com `fail-fast: false` dentro de `strategy:`. Adicione isso ao seu job."
+          - "Valide com `actionlint`."
+        tips:
+          - type: "warning"
+            title: "Versão sem aspas vira número"
+            content: "É o bug de YAML mais comum em matriz. '3.10' sem aspas vira 3.1 e o pipeline vai tentar usar uma versão que não existe. A regra é simples e não tem exceção: número de versão sempre entre aspas."
+          - type: "tip"
+            title: "Matriz multiplica custo"
+            content: "3 versões x 2 sistemas operacionais = 6 jobs = 6 runners. Em repositório privado isso é faturado em minutos. Matriz é poderosa e cara — use quando a combinação realmente importa."
+        validation:
+          - command: "cd ~/app-ci && grep -q 'strategy:' .github/workflows/build.yml && grep -q 'matrix:' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Não encontrei strategy/matrix no workflow."
+          - command: "cd ~/app-ci && grep -qE \"['\\\"]1\\.2[123]['\\\"]\" .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "As versões da matriz precisam estar entre aspas. Sem aspas o YAML converte para número."
+          - command: "cd ~/app-ci && grep -q 'matrix.go' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Nenhum step lê o valor da matriz com matrix.go."
+          - command: "cd ~/app-ci && grep -q 'fail-fast: false' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Faltou desligar o fail-fast na estratégia da matriz."
+          - command: "cd ~/app-ci && git add -A 2>/dev/null; ~/.local/bin/actionlint 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint apontou erros."
+
+      - name: "Secrets, vars e permissões"
+        description: "O modelo de segurança do Actions — onde iniciante vaza credencial sem perceber."
+        steps:
+          - "**Três lugares para guardar valores, e eles não são intercambiáveis**"
+          - "- **`env`** — valor comum, visível no YAML e no log. Ex: `LOG_LEVEL`."
+          - "- **`vars`** — configuração não sensível guardada no GitHub. Ex: nome do ambiente. Aparece no log."
+          - "- **`secrets`** — valor sensível. O GitHub **mascara** no log, trocando por asteriscos."
+          - "A regra: se vazar e causar dano, é secret. Não existe meio-termo."
+          - "**O mascaramento tem limites — e isso importa**"
+          - "O GitHub só mascara o valor **exato** do secret. Se o seu script transforma o valor, o mascaramento não acompanha. Um secret ecoado em base64 aparece **em texto claro** no log, porque a string codificada não bate com a original."
+          - "É assim que credencial vaza em pipeline público sem ninguém perceber."
+          - "**`GITHUB_TOKEN`: o secret que você não cria**"
+          - "Todo workflow recebe automaticamente um `GITHUB_TOKEN`, com validade só daquela execução. Ele é o jeito certo de o pipeline falar com o próprio GitHub — publicar pacote, comentar num PR, criar release."
+          - "Não crie um Personal Access Token para isso. PAT é credencial de longa duração, com as suas permissões, que alguém precisa lembrar de rotacionar. O `GITHUB_TOKEN` morre em minutos."
+          - "**Permissões: o padrão é generoso demais**"
+          - "Por segurança, declare explicitamente o que o workflow pode fazer. Começa negando tudo e libera só o necessário."
+          - "**Sua vez.** No `build.yml`, no nível do workflow (mesma indentação de `jobs:`), adicione um bloco `permissions:` que conceda **apenas** leitura de conteúdo (`contents: read`)."
+          - "Depois, **só no job `build`**, adicione um `permissions:` que conceda `contents: read` e `packages: write` — porque é ele que publicaria a imagem no registry."
+          - "Permissão declarada no job **sobrescreve** a do workflow. Essa é a forma correta: mínimo global, exceção pontual e justificada."
+          - "Valide com `actionlint`."
+          - "**Por que NÃO existe um job de deploy aqui**"
+          - "Você deve estar esperando um job que faça `kubectl apply` no cluster. Ele não vem — e a ausência é proposital."
+          - "Colocar credencial de cluster no pipeline significa dar ao GitHub acesso de escrita à sua produção, e entregar mudanças por **push**: nada compara o que está no cluster com o que está no Git, ninguém detecta alteração feita na mão, não há histórico do estado real."
+          - "Lembra do fio que abrimos na fase de modelo declarativo — estado desejado versus estado real? É exatamente esse buraco que o ArgoCD preenche no próximo lab da trilha."
+          - "A divisão que você vai levar para a vida: **CI produz artefato. CD reconcilia estado.** São responsabilidades diferentes, com credenciais diferentes."
+        tips:
+          - type: "warning"
+            title: "Secret transformado não é mascarado"
+            content: "O mascaramento casa string exata. base64, jq, split, interpolação dentro de JSON — qualquer transformação escapa do filtro e imprime o valor no log. Nunca ecoe secret, nem 'só para depurar'."
+          - type: "info"
+            title: "pull_request de fork não recebe secrets"
+            content: "É proposital: senão qualquer pessoa abriria um PR com um workflow que imprime as suas credenciais. Se o seu pipeline 'só falha em PR de fork', quase sempre é isso."
+        validation:
+          - command: "cd ~/app-ci && grep -qE '^permissions:' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Faltou o bloco permissions no nível do workflow (sem indentação, alinhado com jobs:)."
+          - command: "cd ~/app-ci && grep -q 'packages: write' .github/workflows/build.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O job build precisa de permissions com packages: write."
+          - command: "cd ~/app-ci && grep -cE '^\\s*permissions:' .github/workflows/build.yml | awk '$1>=2{print \"ok\"}'"
+            expectedOutput: "ok"
+            errorMessage: "Esperava dois blocos permissions: um no workflow e um no job build."
+          - command: "cd ~/app-ci && grep -qE 'echo .*secrets\\.' .github/workflows/build.yml && echo 'vazando' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Há um step ecoando um secret. Nunca imprima secret no log."
+          - command: "cd ~/app-ci && grep -q 'kubectl apply' .github/workflows/build.yml && echo 'push-deploy' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Existe um kubectl apply no pipeline. Deploy por push é justamente o que o GitOps resolve — isso fica para o lab de ArgoCD."
+          - command: "cd ~/app-ci && git add -A 2>/dev/null; ~/.local/bin/actionlint 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint apontou erros no build.yml."

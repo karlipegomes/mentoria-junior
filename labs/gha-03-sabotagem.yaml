@@ -1,0 +1,285 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gha-sabotagem-lab
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: gha-sabotagem
+    title: "GitHub Actions 3/3: Diagnóstico de Pipeline Quebrado"
+    description: "Cinco pipelines com defeito e nenhuma dica de onde. Metade dos defeitos o linter encontra; a outra metade passa com lint verde e quebra depois. O objetivo aqui não é escrever workflow — é investigar."
+    duration: 50m
+    image: "linuxtips/girus-devops:0.1"
+    privileged: true
+    tasks:
+      - name: "Preparando a cena do crime"
+        description: "Montar o repositório com os workflows defeituosos que você vai investigar."
+        steps:
+          - "**Como este lab funciona**"
+          - "Nos labs anteriores você construiu. Aqui você **conserta** — que é o que se faz na maior parte do tempo em um emprego de verdade."
+          - "Ninguém vai te dizer qual é o defeito. Você recebe o sintoma e tem que chegar na causa."
+          - "Monte o repositório:"
+          - "`mkdir -p ~/forense && cd ~/forense && git init -q`"
+          - "`git config user.email \"junior@lab.local\" && git config user.name \"Junior\" && mkdir -p .github/workflows`"
+          - "`echo '# forense' > README.md`"
+          - "Garanta que o actionlint está no PATH (você instalou no primeiro lab):"
+          - "`export PATH=\"$HOME/.local/bin:$PATH\" && actionlint --version`"
+          - "Se falhar, reinstale:"
+          - "`cd /tmp && curl -sSL -o al.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz && tar xzf al.tgz actionlint && mkdir -p ~/.local/bin && mv actionlint ~/.local/bin/ && cd ~/forense`"
+          - "**Agora gere os workflows defeituosos.** Cole o bloco inteiro de uma vez:"
+          - |
+            cd ~/forense
+            cat > .github/workflows/a.yml << 'FIM'
+            name: Alpha
+            on:
+              push:
+                branches: [main]
+            jobs:
+              compilar:
+                runs-on: ubuntu-latest
+                steps:
+                  - uses: actions/checkout@v4
+                  - run: echo "compilando"
+              publicar:
+                runs-on: ubunto-latest
+                needs: compilarr
+                steps:
+                  - run: echo "publicando"
+                    shell: bahs
+            FIM
+            cat > .github/workflows/b.yml << 'FIM'
+            name: Beta
+            on: push
+            jobs:
+              testar:
+                runs-on: ubuntu-latest
+                strategy:
+                  matrix:
+                    python: [3.10, 3.9]
+                steps:
+                  - name: Mostra versao
+                    run: echo "python ${{ matrix.python }}"
+            FIM
+            cat > .github/workflows/c.yml << 'FIM'
+            name: Gamma
+            on: push
+            jobs:
+              relatorio:
+                runs-on: ubuntu-latest
+                steps:
+                  - name: Conta linhas do README
+                    run: wc -l README.md
+            FIM
+            cat > .github/workflows/d.yml << 'FIM'
+            name: Delta
+            on: push
+            jobs:
+              deploy:
+                runs-on: ubuntu-latest
+                steps:
+                  - name: Autentica
+                    run: |
+                      echo "token=${{ secrets.API_TOKEN }}" | base64
+                      curl -s -H "Authorization: Bearer ${{ secrets.API_TOKEN }}" https://example.com
+            FIM
+            cat > .github/workflows/e.yml << 'FIM'
+            name: Epsilon
+            on: push
+            jobs:
+              build:
+                runs-on: ubuntu-latest
+                steps:
+                  - uses: actions/checkout@v4
+                  - run: mkdir -p dist && echo "binario" > dist/app
+                  - uses: actions/cache@v4
+                    with:
+                      path: dist
+                      key: build-${{ github.sha }}
+              empacotar:
+                runs-on: ubuntu-latest
+                needs: build
+                steps:
+                  - uses: actions/cache@v4
+                    with:
+                      path: dist
+                      key: build-${{ github.sha }}
+                  - run: tar czf pacote.tgz dist/app
+            FIM
+            echo "cena montada"
+          - "Confirme que os cinco existem:"
+          - "`ls .github/workflows/`"
+        tips:
+          - type: "info"
+            title: "Investigar é diferente de saber"
+            content: "Você não precisa ter visto o defeito antes. Precisa de método: reproduzir, isolar, formular hipótese, testar a hipótese com um comando, confirmar. Esse método vale para pipeline, para container e para produção às três da manhã."
+        validation:
+          - command: "ls ~/forense/.github/workflows/*.yml 2>/dev/null | wc -l | tr -d ' '"
+            expectedOutput: "5"
+            errorMessage: "Esperava 5 workflows em ~/forense/.github/workflows/."
+          - command: "test -x ~/.local/bin/actionlint && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint não está disponível em ~/.local/bin."
+
+      - name: "Rodada 1: o que o linter encontra"
+        description: "Deixe a ferramenta trabalhar primeiro. Depois entenda cada erro, em vez de só aplicar a correção."
+        steps:
+          - "**Rode o linter em tudo**"
+          - "`cd ~/forense && git add -A && actionlint`"
+          - "Ele vai apontar problemas no `a.yml`. Leia cada mensagem **inteira** antes de mexer — o actionlint diz a linha, a coluna e, quando o valor é inválido, lista os valores aceitos."
+          - "**Os três defeitos do `a.yml`, e o que cada um ensina:**"
+          - "1. Um `runs-on` com nome de runner que não existe. Erro de digitação em label não é pego em tempo de escrita — o job simplesmente **fica esperando para sempre** por uma máquina que nunca vai aparecer. Não falha: pendura."
+          - "2. Um `needs` apontando para job inexistente. Repare que o nome está quase certo. Nome de job é string livre, e não existe autocompletar."
+          - "3. Um `shell` inválido. A lista de shells aceitos é fechada."
+          - "**Corrija os três** editando o arquivo. O job `publicar` tem que continuar existindo e continuar dependendo do job `compilar`."
+          - "Rode o linter de novo até ficar silencioso:"
+          - "`git add -A && actionlint`"
+          - "**Por que o silêncio importa**"
+          - "O actionlint não imprime nada quando está tudo certo. Ferramenta de linha de comando boa é assim — fala só quando há problema. Guarde isso: em pipeline, saída vazia com código de retorno zero é sucesso."
+        tips:
+          - type: "tip"
+            title: "Erro que pendura é pior que erro que falha"
+            content: "Um runner inexistente não gera erro, gera espera. O job fica em Queued indefinidamente até alguém cancelar. Sempre que um job ficar preso na fila sem começar, o primeiro suspeito é o valor de runs-on."
+        validation:
+          - command: "cd ~/forense && git add -A 2>/dev/null; ~/.local/bin/actionlint .github/workflows/a.yml 2>&1 | grep -q . && echo 'ainda-quebrado' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O a.yml ainda tem erros de lint. Rode actionlint e corrija o que ele apontar."
+          - command: "cd ~/forense && grep -qE '^\\s*needs:\\s*compilar\\s*$' .github/workflows/a.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O job publicar precisa continuar dependendo de compilar (needs: compilar)."
+          - command: "cd ~/forense && grep -qE '^\\s*publicar:' .github/workflows/a.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O job publicar sumiu. O objetivo é consertar, não apagar."
+
+      - name: "Rodada 2: o que passa com lint verde"
+        description: "Os defeitos restantes não geram uma linha sequer de aviso. É aqui que o pipeline te trai."
+        steps:
+          - "**Rode o linter em b, c e d**"
+          - "`cd ~/forense && git add -A && actionlint .github/workflows/b.yml .github/workflows/c.yml .github/workflows/d.yml`"
+          - "Silêncio absoluto. Os três estão **aprovados** pelo linter — e os três estão errados."
+          - "**Esta é a lição mais importante do lab:** ferramenta encontra erro de forma, não erro de intenção. Lint verde significa 'a gramática está certa', nunca 'o pipeline está correto'."
+          - "**b.yml — o defeito silencioso**"
+          - "A matriz declara as versões `3.10` e `3.9`. Em YAML, `3.10` sem aspas não é texto, é **número**. E zero à direita de decimal não existe: `3.10` vira `3.1`."
+          - "Ou seja, o pipeline que você acha que testa Python 3.10 está testando **3.1** — uma versão que não existe há mais de vinte anos. Ninguém é avisado."
+          - "Repare na maldade: `3.9` sem aspas continua valendo `3.9`. Metade da matriz funciona, o que torna o defeito ainda mais difícil de enxergar."
+          - "**Corrija o b.yml** deixando as duas versões como texto."
+          - "**c.yml — o pré-requisito ausente**"
+          - "O job lê o `README.md`. Volte ao modelo de execução do primeiro lab: o runner é uma máquina nova e vazia."
+          - "**Corrija o c.yml.**"
+          - "**d.yml — o vazamento**"
+          - "Dois comandos usam o mesmo secret. Um deles vaza a credencial no log em texto claro; o outro é uso legítimo."
+          - "O GitHub mascara secret no log, mas o mascaramento casa a string **exata**. Qualquer transformação — `base64`, `jq`, recorte — produz uma string diferente, que não bate com o filtro e é impressa."
+          - "**Corrija o d.yml** removendo apenas a linha que vaza. A chamada `curl` que usa o secret para autenticar deve permanecer."
+          - "Rode o linter de novo. Ele vai continuar em silêncio — como estava antes. O silêncio dele nunca foi o critério."
+        tips:
+          - type: "warning"
+            title: "3.10 vira 3.1, e 1.20 vira 1.2"
+            content: "Vale para qualquer versão com zero no fim, em qualquer lugar do YAML: matriz, tag de imagem, versão de linguagem. Número de versão sempre entre aspas. Sem exceção."
+          - type: "warning"
+            title: "Nunca ecoe secret, nem para depurar"
+            content: "'Só um echo para ver se chegou' é a origem de boa parte dos vazamentos reais. Se precisar confirmar que um secret chegou, teste o tamanho dele, nunca o conteúdo."
+          - type: "info"
+            title: "A chave on é um booleano"
+            content: "Curiosidade que explica muito bug de ferramenta: em YAML 1.1, on sem aspas é o booleano verdadeiro. O parser do GitHub trata isso corretamente, mas ferramentas genéricas leem a chave como True — é por isso que 'yq .on arquivo.yml' devolve vazio e você precisa consultar '.true'."
+        validation:
+          - command: "cd ~/forense && grep -qE \"['\\\"]3\\.10['\\\"]\" .github/workflows/b.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "A versão 3.10 do b.yml ainda não está entre aspas."
+          - command: "cd ~/forense && grep -q 'actions/checkout@' .github/workflows/c.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O c.yml continua sem checkout. Sem ele o runner não tem o README para contar."
+          - command: "cd ~/forense && grep -q 'base64' .github/workflows/d.yml && echo 'ainda-vaza' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "A linha que passa o secret por base64 continua no d.yml. É exatamente ela que vaza."
+          - command: "cd ~/forense && grep -q 'secrets.API_TOKEN' .github/workflows/d.yml && echo 'ok' || echo 'apagou-demais'"
+            expectedOutput: "ok"
+            errorMessage: "Você removeu o uso do secret por completo. O objetivo era parar de imprimi-lo, não deixar de usá-lo."
+          - command: "cd ~/forense && git add -A 2>/dev/null; ~/.local/bin/actionlint .github/workflows/b.yml .github/workflows/c.yml .github/workflows/d.yml 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Você introduziu um erro de sintaxe ao corrigir. Rode o actionlint."
+
+      - name: "Rodada 3: cache não é transporte"
+        description: "O defeito mais sutil da série — funciona nos seus testes e quebra semanas depois, sem ninguém ter mudado nada."
+        steps:
+          - "**O sintoma que ninguém consegue reproduzir**"
+          - "O `e.yml` tem dois jobs: `build` produz `dist/app` e guarda em cache; `empacotar` restaura o cache e empacota o arquivo."
+          - "Isso **funciona** — na maior parte das vezes. E um dia falha com `tar: dist/app: Cannot stat: No such file or directory`, sem ninguém ter tocado no código."
+          - "**Por que**"
+          - "`actions/cache` é uma otimização **oportunista**. O cache pode ser removido por expiração, por limite de tamanho do repositório, ou simplesmente não existir naquela execução. Quando não existe, a Action **não falha** — apenas segue em frente com o diretório vazio, porque a função dela é acelerar, não garantir."
+          - "O job seguinte então tenta empacotar um arquivo que não está lá."
+          - "**A regra que separa júnior de pleno:**"
+          - "- **Cache** — se sumir, o pipeline fica mais lento. Nunca quebra."
+          - "- **Artifact** — se sumir, o pipeline quebra. É transporte, e é garantido dentro da execução."
+          - "Um pipeline que **quebra com cache frio** está errado por definição, mesmo que passe cem vezes seguidas."
+          - "**Corrija o e.yml**: troque o transporte entre os dois jobs por artifacts (`actions/upload-artifact@v4` no `build`, `actions/download-artifact@v4` no `empacotar`). O cache pode continuar existindo se você quiser acelerar — mas não pode ser o que carrega o arquivo."
+          - "Valide:"
+          - "`cd ~/forense && git add -A && actionlint`"
+        tips:
+          - type: "warning"
+            title: "Bug que só aparece com cache frio"
+            content: "Essa classe de defeito é traiçoeira porque passa em todos os testes: durante o desenvolvimento o cache está sempre quente. A falha chega semanas depois, sem mudança de código, e o histórico do Git não ajuda. Teste sempre imaginando o cache vazio."
+          - type: "tip"
+            title: "Como confirmar a hipótese"
+            content: "Em um repositório real, você valida isso mudando a key do cache para um valor novo — cache frio garantido. Se o pipeline quebrar, você confirmou a causa em uma única execução."
+        validation:
+          - command: "cd ~/forense && grep -q 'upload-artifact' .github/workflows/e.yml && grep -q 'download-artifact' .github/workflows/e.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O e.yml ainda não usa artifacts para transportar dist/app entre os jobs."
+          - command: "cd ~/forense && grep -qE '^\\s*empacotar:' .github/workflows/e.yml && grep -qE '^\\s*needs:\\s*build\\s*$' .github/workflows/e.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O job empacotar precisa continuar existindo e dependendo de build."
+          - command: "cd ~/forense && git add -A 2>/dev/null; ~/.local/bin/actionlint 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Ainda há erros de lint em algum workflow."
+
+      - name: "O laudo"
+        description: "Registrar o raciocínio. Em entrevista e em post-mortem, quem não sabe narrar o diagnóstico não recebe crédito por tê-lo feito."
+        steps:
+          - "**Por que escrever**"
+          - "Consertar sem saber explicar é sorte, e sorte não se repete. O laudo é o que transforma o conserto em competência — e é literalmente o que vão te pedir numa entrevista: *me conta um problema difícil que você resolveu*."
+          - "Crie o arquivo `LAUDO.md` na raiz de `~/forense` com **uma seção para cada um dos cinco workflows** (a, b, c, d, e)."
+          - "Cada seção precisa das cinco linhas do método:"
+          - "- **Sintoma** — o que a pessoa que reportou veria acontecer"
+          - "- **Hipótese** — o que você suspeitou primeiro"
+          - "- **Comando** — o que você rodou para confirmar"
+          - "- **Causa** — a causa raiz, em uma frase"
+          - "- **Correção** — o que você mudou"
+          - "Use este cabeçalho exato em cada seção para as validações funcionarem: `## a.yml`, `## b.yml`, e assim por diante."
+          - "**Um exemplo do nível esperado** (não copie — é sobre um caso que não está no lab):"
+          - |
+            ```markdown
+            ## exemplo.yml
+            - **Sintoma:** o job fica em Queued e nunca inicia.
+            - **Hipotese:** o runner solicitado nao existe.
+            - **Comando:** actionlint .github/workflows/exemplo.yml
+            - **Causa:** runs-on apontava para um label inexistente, e label invalido nao falha, apenas nunca encontra maquina.
+            - **Correcao:** corrigi o label para ubuntu-latest.
+            ```
+          - "**A pergunta que fecha o lab**"
+          - "Acrescente ao final do `LAUDO.md` uma seção `## Conclusão` respondendo, com suas palavras:"
+          - "*Dos cinco defeitos, o linter encontrou os de um único arquivo. O que isso te diz sobre confiar em ferramenta de validação automática?*"
+          - "Não existe validação automática para essa resposta — quem lê é o seu mentor. É de propósito."
+        tips:
+          - type: "info"
+            title: "Este formato é o do post-mortem"
+            content: "Sintoma, hipótese, evidência, causa raiz e correção é a estrutura de um post-mortem de incidente de verdade. Praticar em pipeline quebrado é ensaio barato para o dia em que o sistema cair."
+          - type: "tip"
+            title: "Guarde no portfólio"
+            content: "Um repositório com pipelines quebrados e um LAUDO.md explicando cada diagnóstico vale mais em entrevista do que um pipeline bonito que funciona. Ele mostra raciocínio, e raciocínio é o que está sendo comprado."
+        validation:
+          - command: "test -f ~/forense/LAUDO.md && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O arquivo LAUDO.md não foi criado na raiz de ~/forense."
+          - command: "cd ~/forense && for f in a b c d e; do grep -qi \"^## $f.yml\" LAUDO.md || exit 1; done; echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Faltou a seção de algum workflow. Esperava de '## a.yml' até '## e.yml'."
+          - command: "cd ~/forense && grep -ci 'sintoma' LAUDO.md | awk '$1>=5{print \"ok\"}'"
+            expectedOutput: "ok"
+            errorMessage: "Esperava a linha Sintoma nas cinco seções."
+          - command: "cd ~/forense && grep -ci 'causa' LAUDO.md | awk '$1>=5{print \"ok\"}'"
+            expectedOutput: "ok"
+            errorMessage: "Esperava a linha Causa nas cinco seções."
+          - command: "cd ~/forense && grep -qi '^## Conclus' LAUDO.md && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Faltou a seção Conclusão no final do LAUDO.md."

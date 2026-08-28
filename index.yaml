@@ -1,0 +1,38 @@
+# Repositório de labs da mentoria — complementa o girus-labs oficial.
+#
+# Uso remoto (depois de dar push):
+#   girus repo add mentoria https://raw.githubusercontent.com/karlipegomes/mentoria--junior/main
+#
+# Uso local (para testar antes do push) — atenção: o caminho aponta para o
+# ARQUIVO index.yaml, não para o diretório. O README do GIRUS diz o contrário,
+# mas o código faz os.ReadFile direto (internal/repo/index.go:209).
+#   girus repo add mentoria file:///caminho/absoluto/mentoria--junior/index.yaml
+#
+# Convenção de níveis: o schema não tem campo difficulty, mas tags é lista livre
+# e é indexada pela busca (cmd/lab.go:173). Cada lab leva nivel-N + rótulo humano.
+#   girus lab search nivel-2
+
+labs:
+  - id: gha-anatomia
+    title: "GitHub Actions 1/3 - Anatomia de um Workflow"
+    description: "O modelo de execução antes do YAML - evento, runner efêmero, job, step. Termina escrevendo um workflow do zero a partir de especificação."
+    version: 1.0.0
+    duration: 40m
+    tags: [github-actions, ci, cicd, devops, fase-4, nivel-1, iniciante]
+    url: https://raw.githubusercontent.com/karlipegomes/mentoria--junior/main/labs/gha-01-anatomia.yaml
+
+  - id: gha-pipeline
+    title: "GitHub Actions 2/3 - Pipeline de CI de Verdade"
+    description: "Build multi-stage, transporte de artefatos entre jobs, matriz de versões, secrets e permissões mínimas. Requisito dado, YAML por conta do aluno."
+    version: 1.0.0
+    duration: 55m
+    tags: [github-actions, ci, cicd, docker, matrix, secrets, devops, fase-4, nivel-2, intermediario]
+    url: https://raw.githubusercontent.com/karlipegomes/mentoria--junior/main/labs/gha-02-pipeline.yaml
+
+  - id: gha-sabotagem
+    title: "GitHub Actions 3/3 - Diagnóstico de Pipeline Quebrado"
+    description: "Cinco pipelines defeituosos. O linter acha os de um arquivo só; os outros quatro passam com lint verde. Fecha com laudo no formato de post-mortem."
+    version: 1.0.0
+    duration: 50m
+    tags: [github-actions, ci, cicd, troubleshooting, debugging, seguranca, devops, fase-4, nivel-3, avancado]
+    url: https://raw.githubusercontent.com/karlipegomes/mentoria--junior/main/labs/gha-03-sabotagem.yaml

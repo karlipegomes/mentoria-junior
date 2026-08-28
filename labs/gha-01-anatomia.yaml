@@ -1,0 +1,231 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gha-anatomia-lab
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: gha-anatomia
+    title: "GitHub Actions 1/3: Anatomia de um Workflow"
+    description: "Entenda o modelo de execução do GitHub Actions antes de escrever YAML: o que dispara, onde roda, e por que o runner chega vazio. Ao final você escreve um workflow do zero, a partir de uma especificação, e valida com actionlint."
+    duration: 40m
+    image: "linuxtips/girus-devops:0.1"
+    privileged: true
+    tasks:
+      - name: "O modelo de execução"
+        description: "Antes de qualquer YAML: entender o que acontece quando você faz git push. Sem esse modelo, workflow vira tentativa e erro."
+        steps:
+          - "**O que realmente acontece quando um workflow roda**"
+          - "Muita gente aprende GitHub Actions decorando YAML. O resultado é previsível: funciona enquanto copia, e trava no primeiro erro. Vamos pelo caminho contrário — o modelo primeiro."
+          - "Quando você dá `git push`, esta é a cadeia:"
+          - "1. **Evento** — algo aconteceu no repositório (um push, um pull request, um horário no cron, um clique manual)."
+          - "2. **Workflow** — o GitHub procura arquivos `.yml` em `.github/workflows/` e vê quais se interessam por esse evento."
+          - "3. **Runner** — para cada `job`, o GitHub liga **uma máquina virtual nova e vazia**. Não é o seu computador. Não é o seu repositório."
+          - "4. **Steps** — os passos rodam em ordem, na mesma máquina, compartilhando o disco."
+          - "5. **Descarte** — o job termina e a máquina é **destruída**. Nada sobrevive."
+          - "Guarde o ponto 3 e o ponto 5. Quase todo erro de iniciante em Actions nasce de esquecer um dos dois."
+          - "**Preparando o terreno**"
+          - "Workflows só existem dentro de um repositório Git. Vamos criar um:"
+          - "`mkdir -p ~/pipeline-lab && cd ~/pipeline-lab`"
+          - "`git init -q && git config user.email \"junior@lab.local\" && git config user.name \"Junior\"`"
+          - "Agora a estrutura que o GitHub espera. O caminho é exato — `.github/workflows/`. Um diretório com nome diferente é ignorado silenciosamente:"
+          - "`mkdir -p .github/workflows`"
+          - "Crie um arquivo qualquer para o repositório não ficar vazio:"
+          - "`echo '# Pipeline Lab' > README.md`"
+          - "**Instalando o actionlint**"
+          - "O `actionlint` é o validador oficial da comunidade para workflows. Ele lê seu YAML e aponta erro de sintaxe, job inexistente, runner inválido e expressão quebrada — antes de você gastar um push."
+          - "Baixe e extraia:"
+          - "`cd /tmp && curl -sSL -o actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz`"
+          - "`tar xzf actionlint.tar.gz actionlint`"
+          - "Agora instale. Repare que **não** vamos usar `sudo` nem escrever em `/usr/local/bin`: você é o usuário `estudante` e não é dono daquele diretório. O lugar certo para binário de usuário é `~/.local/bin`:"
+          - "`mkdir -p ~/.local/bin && mv /tmp/actionlint ~/.local/bin/`"
+          - "**Mas ainda não funciona.** Tente:"
+          - "`actionlint --version`"
+          - "Você recebe `command not found`. O binário existe, mas o shell não sabe onde procurar."
+          - "O shell só procura executáveis nos diretórios listados na variável `PATH`. Veja a sua:"
+          - "`echo $PATH`"
+          - "`~/.local/bin` não está lá. Vamos adicionar:"
+          - "`export PATH=\"$HOME/.local/bin:$PATH\"`"
+          - "Agora sim:"
+          - "`actionlint --version`"
+          - "O `export` vale só para este terminal. Para persistir, grave no seu `~/.bashrc`:"
+          - "`echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc`"
+          - "`cd ~/pipeline-lab`"
+        tips:
+          - type: "info"
+            title: "O runner é descartável"
+            content: "Cada job ganha uma máquina virtual limpa. Dois jobs do mesmo workflow NÃO compartilham disco — nem arquivos, nem instalações. Se o job B precisa de algo que o job A produziu, isso tem que ser transportado de propósito (artifacts, cache ou registry)."
+          - type: "tip"
+            title: "PATH: por que command not found"
+            content: "command not found quase nunca significa 'não instalado'. Significa 'não está em nenhum diretório do PATH'. Antes de reinstalar qualquer coisa, confira com 'ls' se o binário está onde você acha que está, e com 'echo $PATH' se aquele diretório é procurado."
+          - type: "warning"
+            title: "O caminho não é negociável"
+            content: "Tem que ser .github/workflows/. Se você escrever .github/workflow/ (singular) ou github/workflows/ (sem o ponto), o GitHub não reclama — simplesmente nunca roda. É um dos erros mais frustrantes porque não gera mensagem nenhuma."
+        validation:
+          - command: "test -d ~/pipeline-lab/.git && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O repositório Git não foi inicializado em ~/pipeline-lab."
+          - command: "test -d ~/pipeline-lab/.github/workflows && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O diretório .github/workflows não existe. Confira o ponto no início e o plural em 'workflows'."
+          - command: "test -x ~/.local/bin/actionlint && echo 'ok' || echo 'faltando'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint não foi instalado em ~/.local/bin. Confira se o mv funcionou."
+          - command: "grep -q '.local/bin' ~/.bashrc && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Você não persistiu o PATH no ~/.bashrc. Sem isso, o actionlint some quando você abrir outro terminal."
+
+      - name: "Seu primeiro workflow"
+        description: "Escrever o YAML mínimo que roda, entendendo o papel de cada chave — não como fórmula, mas como resposta a uma pergunta."
+        steps:
+          - "**Cada chave responde uma pergunta**"
+          - "- `name:` — como esse workflow aparece na aba Actions"
+          - "- `on:` — **quando** rodar"
+          - "- `jobs:` — **o que** rodar (um ou vários, em paralelo por padrão)"
+          - "- `runs-on:` — **em qual máquina**"
+          - "- `steps:` — **os passos**, em ordem"
+          - "Crie o arquivo `.github/workflows/ci.yml` com este conteúdo:"
+          - |
+            ```yaml
+            name: CI
+
+            on:
+              push:
+                branches: [main]
+              pull_request:
+
+            jobs:
+              saudacao:
+                runs-on: ubuntu-latest
+                steps:
+                  - name: Diz oi
+                    run: echo "pipeline rodando"
+
+                  - name: Mostra onde estamos
+                    run: pwd && ls -la
+            ```
+          - "Para criar o arquivo sem editor interativo, use um heredoc:"
+          - "`cat > .github/workflows/ci.yml << 'EOF'`"
+          - "...cole o conteúdo acima, e termine com uma linha contendo apenas `EOF`"
+          - "**Validando antes de gastar um push**"
+          - "`actionlint`"
+          - "Sem saída significa que está tudo certo. O actionlint só fala quando encontra problema."
+          - "**Dois detalhes de YAML que derrubam iniciante**"
+          - "- `steps:` é uma **lista** — cada item começa com `-`. Esquecer o hífen é o erro nº1."
+          - "- Indentação é com **espaços**, nunca Tab. O YAML rejeita Tab e a mensagem de erro não é óbvia."
+        tips:
+          - type: "tip"
+            title: "on: pull_request sem valor"
+            content: "Repare que `pull_request:` está vazio, sem nada embaixo. Em YAML isso vira null, e o Actions interpreta como 'esse evento, com as configurações padrão'. É idiomático e você vai ver muito."
+          - type: "warning"
+            title: "Rode o actionlint sempre"
+            content: "Cada push com workflow quebrado é um ciclo de espera de minutos para descobrir um erro de digitação. O actionlint devolve isso em milissegundos, local."
+        validation:
+          - command: "test -f ~/pipeline-lab/.github/workflows/ci.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O arquivo .github/workflows/ci.yml não foi criado."
+          - command: "cd ~/pipeline-lab && git add -A 2>/dev/null; ~/.local/bin/actionlint 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint encontrou erros no seu workflow. Rode 'actionlint' e corrija o que ele apontar."
+          - command: "cd ~/pipeline-lab && grep -qE '^\\s*runs-on:' .github/workflows/ci.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Seu workflow não declara runs-on. Sem isso o job não sabe em que máquina rodar."
+
+      - name: "Por que existe actions/checkout"
+        description: "Descobrir na prática o pré-requisito mais mal explicado do Actions: o runner não tem o seu código."
+        steps:
+          - "**A pegadinha**"
+          - "Volte ao ponto 3 do modelo: o runner é uma **máquina nova e vazia**. Ela não tem o seu repositório. Nunca teve."
+          - "Isso significa que um step como `cat README.md` **falha**, mesmo que o README exista no seu repositório — porque o arquivo está no GitHub, não na máquina que está executando."
+          - "Vamos deixar isso explícito. Adicione um segundo job ao seu `ci.yml`, dentro do bloco `jobs:` (mesma indentação de `saudacao:`):"
+          - |
+            ```yaml
+              sem-codigo:
+                runs-on: ubuntu-latest
+                steps:
+                  - name: Tenta ler o README sem baixar o repo
+                    run: cat README.md || echo "FALHOU - o runner nao tem o codigo"
+
+              com-codigo:
+                runs-on: ubuntu-latest
+                steps:
+                  - name: Baixa o repositorio para dentro do runner
+                    uses: actions/checkout@v4
+
+                  - name: Agora sim
+                    run: cat README.md
+            ```
+          - "**A diferença entre `run` e `uses`**"
+          - "- `run:` executa um **comando de shell** dentro do runner."
+          - "- `uses:` executa uma **Action** — código empacotado que outra pessoa escreveu e você reaproveita."
+          - "`actions/checkout@v4` é a Action que faz `git clone` do seu repositório para dentro do runner. É por isso que ela é quase sempre o primeiro step: sem ela, o runner não tem nada com que trabalhar."
+          - "O `@v4` é a **versão**. Fixar versão importa: `@main` significa aceitar qualquer mudança futura que o autor fizer, inclusive uma que quebre o seu pipeline."
+          - "Valide de novo:"
+          - "`actionlint`"
+        tips:
+          - type: "warning"
+            title: "Dois-pontos dentro de run quebra o YAML"
+            content: "Repare que a mensagem usa hífen, e não dois-pontos. Em YAML, dois-pontos seguido de espaço dentro de um valor não citado faz o parser achar que ali começou um mapa. O erro que aparece é 'mapping values are not allowed in this context' e ele não menciona a sua string — por isso custa caro achar. Se precisar de dois-pontos, ponha o valor inteiro entre aspas simples."
+          - type: "info"
+            title: "Quando NÃO usar checkout"
+            content: "Se o job só chama uma API, envia uma notificação ou publica algo já pronto, ele não precisa do código. Checkout custa tempo. Nem todo job precisa dele — mas todo job que toca em arquivo do repositório precisa."
+          - type: "tip"
+            title: "Leia isso como custo"
+            content: "Três jobs = três máquinas = três checkouts = três vezes o tempo de clone. Job separado é isolamento, e isolamento tem preço. Só separe quando quiser paralelismo ou fronteira de falha."
+        validation:
+          - command: "cd ~/pipeline-lab && grep -q 'actions/checkout@' .github/workflows/ci.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Nenhum step usa actions/checkout. Adicione o job com-codigo."
+          - command: "cd ~/pipeline-lab && grep -cE '^\\s{2}[a-z-]+:$' .github/workflows/ci.yml | awk '$1>=3{print \"ok\"}'"
+            expectedOutput: "ok"
+            errorMessage: "Esperava pelo menos 3 jobs no workflow (saudacao, sem-codigo, com-codigo)."
+          - command: "cd ~/pipeline-lab && git add -A 2>/dev/null; ~/.local/bin/actionlint 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint apontou erros. Corrija antes de seguir."
+
+      - name: "Recall: escreva do zero"
+        description: "Sem código pronto para copiar. Só a especificação — como numa tarefa real."
+        steps:
+          - "**A prova de que você entendeu**"
+          - "Até aqui você teve o YAML pronto na tela. Agora não tem mais. Esta tarefa dá apenas o **requisito**; o YAML é seu."
+          - "Crie um **novo** arquivo `.github/workflows/nightly.yml` que satisfaça tudo isto:"
+          - "1. Chame-se `Nightly`."
+          - "2. Rode **todo dia às 3h da manhã UTC** — e também sob demanda, por um botão manual na interface do GitHub."
+          - "3. Tenha **um único job** chamado `auditoria`, rodando em `ubuntu-latest`."
+          - "4. O job deve **baixar o código do repositório**."
+          - "5. Depois, executar um step chamado `Conta arquivos` que imprima quantos arquivos existem no repositório."
+          - "**As duas peças que você ainda não viu**"
+          - "Você precisa descobrir duas chaves novas. As dicas abaixo dizem o nome delas e o que fazem — a sintaxe exata é com você:"
+          - "- Para agendar por horário, o evento se chama `schedule`, e ele recebe uma lista de entradas `cron`. A sintaxe do cron é a mesma do Linux que você já viu: `minuto hora dia mês dia-da-semana`."
+          - "- Para o botão manual, o evento se chama `workflow_dispatch`."
+          - "Quando terminar, valide:"
+          - "`actionlint`"
+          - "Se o actionlint não reclamar e as validações abaixo passarem, você escreveu um workflow do zero."
+        tips:
+          - type: "tip"
+            title: "Cron às 3h UTC"
+            content: "Minuto 0, hora 3, e todo o resto é curinga. O curinga em cron é o asterisco. Atenção: no YAML, uma expressão cron precisa estar entre aspas, porque o asterisco tem significado especial em YAML."
+          - type: "warning"
+            title: "Horário do GitHub é UTC"
+            content: "Sempre UTC, nunca o seu fuso. 3h UTC é meia-noite em Brasília. Agendar sem lembrar disso é um clássico — o pipeline roda três horas antes ou depois do que a pessoa esperava."
+        validation:
+          - command: "test -f ~/pipeline-lab/.github/workflows/nightly.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O arquivo .github/workflows/nightly.yml não foi criado."
+          - command: "cd ~/pipeline-lab && grep -q 'workflow_dispatch' .github/workflows/nightly.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "Faltou o evento workflow_dispatch (o botão de execução manual)."
+          - command: "cd ~/pipeline-lab && grep -qE \"cron:\\s*['\\\"]0 3 \" .github/workflows/nightly.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O agendamento não está às 3h UTC. Esperava uma entrada cron começando com '0 3'."
+          - command: "cd ~/pipeline-lab && grep -q 'actions/checkout@' .github/workflows/nightly.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O job auditoria não baixa o código. Sem checkout ele não tem arquivos para contar."
+          - command: "cd ~/pipeline-lab && grep -qE '^\\s*auditoria:' .github/workflows/nightly.yml && echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O job precisa se chamar exatamente 'auditoria'."
+          - command: "cd ~/pipeline-lab && git add -A 2>/dev/null; ~/.local/bin/actionlint 2>&1 | grep -q . && echo 'erros' || echo 'ok'"
+            expectedOutput: "ok"
+            errorMessage: "O actionlint apontou erros no nightly.yml."
